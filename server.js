@@ -37,6 +37,18 @@ wss.on('connection', (ws) => {
       rooms[roomId].add(ws);
       
       console.log(`Client joined room ${roomId}. Total in room: ${rooms[roomId].size}`);
+      
+      // When a second person joins, tell the FIRST person (Creator) to initiate the call.
+      // This prevents Glare (both sending offers at the same time).
+      if (rooms[roomId].size === 2) {
+        for (const client of rooms[roomId]) {
+          if (client !== ws && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'peer-joined' }));
+            break;
+          }
+        }
+      }
+      
       return;
     }
 
