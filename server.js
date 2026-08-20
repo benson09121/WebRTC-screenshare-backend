@@ -9,11 +9,35 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Simple signaling for room-based P2P.
-const rooms = {};
+// Ephemeral signaling for two-person P2P rooms. Nothing is persisted.
+const rooms = new Map();
+const ROOM_ID_PATTERN = /^[A-Z0-9]{3,8}$/;
+
+const send = (ws, data) => {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+};
+
+const leaveRoom = (ws, notifyPeer = true) => {
+  if (!ws.roomId) return;
+
+  const roomId = ws.roomId;
+  const room = rooms.get(roomId);
+  ws.roomId = null;
+  if (!room) return;
+
+  room.delete(ws);
+  console.log(`Client left room ${roomId}. Total in room: ${room.size}`);
+
+  if (notifyPeer) {
+    for (const client of room) send(client, { type: 'peer-left' });
+  }
+
+  if (room.size === 0) rooms.delete(roomId);
+};
 
 wss.on('connection', (ws) => {
   ws.roomId = null;
+  ws.clientId = null;
 
   ws.on('message', (message) => {
     let data;
@@ -24,28 +48,43 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'join-room') {
-      const roomId = data.roomId;
-      if (!roomId) return;
+      const roomId = typeof data.roomId === 'string' ? data.roomId.trim().toUpperCase() : '';
+      const clientId = typeof data.clientId === 'string' ? data.clientId : '';
+      if (!ROOM_ID_PATTERN.test(roomId) || !clientId) {
+        send(ws, { type: 'room-error', message: 'Invalid room code.' });
+        return;
+      }
       
-      // Leave current room if any
-      if (ws.roomId && rooms[ws.roomId]) {
-        rooms[ws.roomId].delete(ws);
+      if (ws.roomId && ws.roomId !== roomId) leaveRoom(ws);
+
+      const room = rooms.get(roomId) || new Set();
+
+      // A reconnect from the same browser replaces its stale signaling socket.
+      for (const existingClient of room) {
+        if (existingClient !== ws && existingClient.clientId === clientId) {
+          room.delete(existingClient);
+          existingClient.roomId = null;
+          existingClient.close(4001, 'Replaced by reconnect');
+        }
+      }
+
+      if (!room.has(ws) && room.size >= 2) {
+        send(ws, { type: 'room-full' });
+        return;
       }
 
       ws.roomId = roomId;
-      if (!rooms[roomId]) rooms[roomId] = new Set();
-      rooms[roomId].add(ws);
+      ws.clientId = clientId;
+      room.add(ws);
+      rooms.set(roomId, room);
       
-      console.log(`Client joined room ${roomId}. Total in room: ${rooms[roomId].size}`);
+      console.log(`Client joined room ${roomId}. Total in room: ${room.size}`);
+      send(ws, { type: 'room-joined', participantCount: room.size });
       
       // When a second person joins, tell the FIRST person (Creator) to initiate the call.
-      // This prevents Glare (both sending offers at the same time).
-      if (rooms[roomId].size === 2) {
-        for (const client of rooms[roomId]) {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify({ type: 'peer-joined' }));
-            break;
-          }
+      if (room.size === 2) {
+        for (const client of room) {
+          if (client !== ws) send(client, { type: 'peer-joined' });
         }
       }
       
@@ -53,8 +92,9 @@ wss.on('connection', (ws) => {
     }
 
     // Broadcast signaling message to all OTHER clients in the same room
-    if (ws.roomId && rooms[ws.roomId]) {
-      for (const client of rooms[ws.roomId]) {
+    const room = ws.roomId ? rooms.get(ws.roomId) : null;
+    if (room) {
+      for (const client of room) {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           // Send raw message string forward
           client.send(message.toString());
@@ -64,13 +104,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (ws.roomId && rooms[ws.roomId]) {
-      rooms[ws.roomId].delete(ws);
-      console.log(`Client left room ${ws.roomId}. Total in room: ${rooms[ws.roomId].size}`);
-      if (rooms[ws.roomId].size === 0) {
-        delete rooms[ws.roomId];
-      }
-    }
+    leaveRoom(ws);
   });
 });
 
