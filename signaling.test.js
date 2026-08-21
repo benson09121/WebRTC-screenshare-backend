@@ -40,6 +40,21 @@ const waitForType = (ws, type) => new Promise((resolve, reject) => {
   ws.on('message', onMessage);
 });
 
+const expectNoType = (ws, type, duration = 150) => new Promise((resolve, reject) => {
+  const onMessage = raw => {
+    const message = JSON.parse(raw.toString());
+    if (message.type !== type) return;
+    clearTimeout(timer);
+    ws.off('message', onMessage);
+    reject(new Error(`Unexpected ${type}`));
+  };
+  const timer = setTimeout(() => {
+    ws.off('message', onMessage);
+    resolve();
+  }, duration);
+  ws.on('message', onMessage);
+});
+
 const join = async (ws, clientId) => {
   const joined = waitForType(ws, 'room-joined');
   ws.send(JSON.stringify({ type: 'join-room', roomId: 'T3ST1', clientId }));
@@ -48,7 +63,7 @@ const join = async (ws, clientId) => {
 
 test('enforces room capacity and supports presence across reconnects', async t => {
   const server = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
-    env: { ...process.env, PORT: String(PORT) },
+    env: { ...process.env, PORT: String(PORT), PEER_RECONNECT_GRACE_MS: '250' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => server.kill());
@@ -77,10 +92,15 @@ test('enforces room capacity and supports presence across reconnects', async t =
 
   const replacement = await connect();
   t.after(() => replacement.close());
-  const firstSawReconnect = waitForType(first, 'peer-joined');
+  const firstSawReconnecting = waitForType(first, 'peer-reconnecting');
+  second.close();
+  await firstSawReconnecting;
+
+  const firstSawReconnect = waitForType(first, 'peer-reconnected');
   const replacementJoined = await join(replacement, 'client-second');
   assert.equal(replacementJoined.participantCount, 2);
   await firstSawReconnect;
+  await expectNoType(first, 'peer-left');
 
   const peerLeft = waitForType(first, 'peer-left');
   replacement.close();
