@@ -33,7 +33,7 @@ const SIGNALING_HEARTBEAT_MS = Number(process.env.SIGNALING_HEARTBEAT_MS) || 250
 // Ephemeral signaling for two-person P2P rooms. Nothing is persisted.
 const rooms = new Map();
 const ROOM_ID_PATTERN = /^[A-Z0-9]{3,8}$/;
-const PEER_RECONNECT_GRACE_MS = Number(process.env.PEER_RECONNECT_GRACE_MS) || 5000;
+const PEER_RECONNECT_GRACE_MS = Number(process.env.PEER_RECONNECT_GRACE_MS) || 30000;
 
 const send = (ws, data) => {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
