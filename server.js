@@ -4,8 +4,28 @@ const WebSocket = require('ws');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
-
+const configuredOrigins = (process.env.CORS_ALLOWLIST || process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
+  .split(',').map(origin => origin.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    // Non-browser clients and same-origin requests do not send Origin.
+    if (!origin || configuredOrigins.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  },
+  methods: ['GET', 'HEAD', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false,
+}));
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 const SIGNALING_HEARTBEAT_MS = Number(process.env.SIGNALING_HEARTBEAT_MS) || 25000;
@@ -159,6 +179,10 @@ const heartbeat = setInterval(() => {
 wss.on('close', () => clearInterval(heartbeat));
 
 const PORT = process.env.PORT || 9080;
-server.listen(PORT, () => {
-  console.log(`Signaling server running on port ${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Signaling server running on port ${PORT}`);
+  });
+}
+
+module.exports = { app, server, wss, rooms };
